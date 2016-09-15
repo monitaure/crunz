@@ -4,7 +4,6 @@ namespace Crunz;
 
 use Symfony\Component\Process\Process;
 use SuperClosure\Serializer;
-use Crunz\Exception\CrunzException;
 use Crunz\Configuration\Configurable;
 use Crunz\Logger\LoggerFactory;
 
@@ -118,6 +117,7 @@ class EventRunner {
 
         $event->setProcess(new Process($command));
         $event->getProcess()->start();
+        $this->invoke($event->onProcessStartCallbacks());
     }
 
     /**
@@ -271,7 +271,7 @@ class EventRunner {
                . ')->'
                . PHP_EOL
                . $event->getProcess()->getErrorOutput()
-               . PHP_EOL;   
+               . PHP_EOL;
     }
 
     /**

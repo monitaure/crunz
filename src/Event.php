@@ -3,7 +3,6 @@ namespace Crunz;
 
 use Closure;
 use Carbon\Carbon;
-use LogicException;
 use Cron\CronExpression;
 use GuzzleHttp\Client as HttpClient;
 use Symfony\Component\Process\Process;
@@ -27,7 +26,7 @@ class Event
     /**
      * Process that runs the event
      *
-     * @var Symfony\Component\Process\Process
+     * @var Process
      */
     protected $process;
 
@@ -60,6 +59,13 @@ class Event
     protected $preventOverlapping = false;
 
     /**
+     * Use to check if another event with the same overlapId is running
+     *
+     * @var bool
+     */
+    protected $overlapId;
+
+    /**
      * The array of filter callbacks.
      *
      * @var array
@@ -79,6 +85,13 @@ class Event
      * @var array
      */
     protected $beforeCallbacks = [];
+
+    /**
+     * The array of callbacks to be run after the process start.
+     *
+     * @var array
+     */
+    protected $onProcessStartCallbacks = [];
 
     /**
      * The array of callbacks to be run after the event is finished.
@@ -150,7 +163,7 @@ class Event
         $this->id      = $id;
         $this->output  = $this->getDefaultOutput();
     }
-   
+
     /**
      * Get the default output depending on the OS.
      *
@@ -208,8 +221,8 @@ class Event
             $command .= 'cd ' . $this->cwd . ';';
         }
 
-        $command .= ! is_object($this->command) ? $this->command : 'object'; 
-    
+        $command .= ! is_object($this->command) ? $this->command : 'object';
+
         return $this->user ? 'sudo -u ' . $this->user . ' ' . $command : $command;
     }
 
@@ -248,7 +261,7 @@ class Event
     public function filtersPass()
     {
         $invoker = new Invoker();
-        
+
         foreach ($this->filters as $callback) {
             if (! $invoker->call($callback)) {
                 return false;
@@ -307,25 +320,25 @@ class Event
      */
     public function on($date)
     {
-        
+
         $date     = date_parse($date);
         $segments = array_only($date, array_flip($this->fieldsPosition));
 
         if ($date['year']) {
- 
+
             $this->skip(function () use ($segments) {
                 return (int) date('Y') != $segments['year'];
             });
 
         }
-                
-        foreach ($segments as $key => $value) {   
-            if ($value != false) {                
+
+        foreach ($segments as $key => $value) {
+            if ($value != false) {
                 $this->spliceIntoPosition($this->fieldsPosition[$key], (int) $value);
             }
         }
 
-        return $this;          
+        return $this;
     }
 
     /**
@@ -362,10 +375,10 @@ class Event
     public function between($from, $to)
     {
         return $this->from($from)
-                    ->to($to);    
-        
+                    ->to($to);
+
     }
-    
+
     /**
      * Check if event should be on
      *
@@ -373,7 +386,7 @@ class Event
      *
      */
      public function from($datetime)
-     { 
+     {
         return $this->skip(function() use ($datetime) {
             return $this->notYet($datetime);
         });
@@ -386,7 +399,7 @@ class Event
      *
      */
     public function to($datetime)
-    {          
+    {
         return $this->skip(function() use ($datetime) {
             return $this->past($datetime);
         });
@@ -400,7 +413,7 @@ class Event
      * @return boolean
      */
     protected function notYet($datetime)
-    {  
+    {
         return time() < strtotime($datetime);
     }
 
@@ -591,7 +604,7 @@ class Event
     public function hour($value)
     {
         $value = is_array($value) ? $value : func_get_args();
-        
+
         return $this->spliceIntoPosition(2, implode(',', $value));
     }
 
@@ -605,7 +618,7 @@ class Event
     public function minute($value)
     {
         $value = is_array($value) ? $value : func_get_args();
-        
+
         return $this->spliceIntoPosition(1, implode(',', $value));
     }
 
@@ -619,7 +632,7 @@ class Event
     public function dayOfMonth($value)
     {
         $value = is_array($value) ? $value : func_get_args();
-        
+
         return $this->spliceIntoPosition(3, implode(',', $value));
     }
 
@@ -633,7 +646,7 @@ class Event
     public function month($value)
     {
         $value = is_array($value) ? $value : func_get_args();
-        
+
         return $this->spliceIntoPosition(4, implode(',', $value));
     }
 
@@ -647,7 +660,7 @@ class Event
     public function dayOfWeek($value)
     {
         $value = is_array($value) ? $value : func_get_args();
-        
+
         return $this->spliceIntoPosition(5, implode(',', $value));
     }
 
@@ -680,19 +693,25 @@ class Event
     }
 
     /**
-     * Do not allow the event to overlap each other.
+     * Do not allow the event to overlap other event with the same overlapId.
      *
-     * @param  string|int $safe_duration
+     * @param  string $overlapId
      *
      * @return $this
      */
-    public function preventOverlapping()
+    public function preventOverlapping($overlapId)
     {
         $this->preventOverlapping = true;
+        $this->overlapId = $overlapId;
 
         // Skip the event if it's locked (processing)
         $this->skip(function () {
             return $this->isLocked();
+        });
+
+        // Lock the process (processing)
+        $this->onProcessStart(function () {
+            $this->lock();
         });
 
         // Delete the lock file when the event is completed
@@ -790,6 +809,20 @@ class Event
     }
 
     /**
+     * Register a callback to be called on process start.
+     *
+     * @param  \Closure  $callback
+     *
+     * @return $this
+     */
+    public function onProcessStart(\Closure $callback)
+    {
+        $this->onProcessStartCallbacks[] = $callback;
+
+        return $this;
+    }
+
+    /**
      * Register a callback to ping a given URL after the job runs.
      *
      * @param  string  $url
@@ -844,7 +877,7 @@ class Event
     /**
      * Set the event's process
      *
-     * @param Symfony\Component\Process\Process $process
+     * @param Process $process
      * 
      * @return $this
      */
@@ -857,7 +890,7 @@ class Event
     /**
      * Return the event's process
      *
-     * @return Symfony\Component\Process\Process $process
+     * @return Process $process
      */
     public function getProcess()
     {
@@ -908,10 +941,10 @@ class Event
         if (! isset($this->fieldsPosition[$unit])) {
             return $this;
         }
-        
+
         $value = $value == 1 ? '*' : '*/' . $value;
         return $this->spliceIntoPosition($this->fieldsPosition[$unit], $value)
-                    ->applyMask($unit);
+            ->applyMask($unit);
     }
 
     /**
@@ -1003,6 +1036,16 @@ class Event
     }
 
     /**
+     * Return all registered on process start callbacks
+     *
+     * @return array
+     */
+    public function onProcessStartCallbacks()
+    {
+        return $this->beforeCallbacks;
+    }
+
+    /**
      * Return all registered after callbacks
      *
      * @return array
@@ -1039,7 +1082,7 @@ class Event
      */
     protected function lock()
     {
-        file_put_contents($this->lockFile(), $event->process->getPid());
+        file_put_contents($this->lockFile(), $this->process->getPid());
     }
 
     /**
@@ -1074,7 +1117,7 @@ class Event
      */
     protected function lockFile()
     {
-        return rtrim(sys_get_temp_dir(), '/') . '/crunz-' . md5($this->id);
+        return rtrim(sys_get_temp_dir(), '/') . '/crunz-' . md5($this->overlapId);
     }
 
     /**
