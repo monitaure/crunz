@@ -1042,7 +1042,7 @@ class Event
      */
     public function onProcessStartCallbacks()
     {
-        return $this->beforeCallbacks;
+        return $this->onProcessStartCallbacks;
     }
 
     /**
